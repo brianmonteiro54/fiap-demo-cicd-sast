@@ -15,9 +15,9 @@ from functools import wraps
 
 from flask import Flask, jsonify, request
 
-# ─────────────────────────────────────────────────
-# Configuração de Logging Estruturado (produção)
-# ─────────────────────────────────────────────────
+MSG_INTERNAL_ERROR = "Erro interno do servidor"
+MSG_INVALID_ID = "Parâmetro 'id' inválido ou ausente"
+
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -27,9 +27,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app")
 
-# ─────────────────────────────────────────────────
-# Validação de variáveis obrigatórias em PRODUÇÃO
-# ─────────────────────────────────────────────────
 REQUIRED_ENV_VARS = ["SECRET_KEY"]
 _missing = [v for v in REQUIRED_ENV_VARS if not os.environ.get(v)]
 if _missing and os.environ.get("FLASK_ENV") != "testing":
@@ -38,88 +35,65 @@ if _missing and os.environ.get("FLASK_ENV") != "testing":
         "a aplicação NÃO será iniciada em produção sem elas.",
         ", ".join(_missing),
     )
-    # Em produção de verdade, aborta; em dev/teste continua com warning
     if os.environ.get("FLASK_DEBUG", "false").lower() != "true":
         sys.exit(1)
 
-# ─────────────────────────────────────────────────
-# Inicialização do App
-# ─────────────────────────────────────────────────
+SANITIZE_RE = re.compile(r"[^a-zA-Z0-9.:_\-/]")
+
+
+def _sanitize_for_log(value: str, max_len: int = 50) -> str:
+    """Remove caracteres perigosos antes de logar dados externos."""
+    return SANITIZE_RE.sub("_", value[:max_len])
+
+
 app = Flask(__name__)
 
 app.config.update(
-    # ✅ SECRET_KEY — nunca hardcoded, obrigatória via env
     SECRET_KEY=os.environ.get("SECRET_KEY", "INSECURE-DEV-ONLY-KEY"),
-
-    # ✅ Cookies de sessão seguros
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SECURE=True,               # Exige HTTPS
+    SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_NAME="__Host-session",      # Prefixo __Host exige Secure + path=/
-
-    # ✅ Limites de payload (proteção DoS)
-    MAX_CONTENT_LENGTH=1 * 1024 * 1024,        # 1 MB
-    MAX_FORM_MEMORY_SIZE=500 * 1024,           # 500 KB
+    SESSION_COOKIE_NAME="__Host-session",
+    MAX_CONTENT_LENGTH=1 * 1024 * 1024,
+    MAX_FORM_MEMORY_SIZE=500 * 1024,
     MAX_FORM_PARTS=100,
-
-    # ✅ JSON seguro
     JSON_SORT_KEYS=False,
-
-    # ✅ Desabilita o modo debug incondicionalmente em prod
     DEBUG=False,
     TESTING=False,
 )
 
-# ✅ Secrets do banco via variáveis de ambiente
 DB_PASSWORD = os.environ.get("DB_PASSWORD")
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "users.db")
 
 
-# ─────────────────────────────────────────────────
-# Security Headers Middleware
-# ─────────────────────────────────────────────────
 @app.after_request
 def set_security_headers(response):
     """Adiciona headers de segurança recomendados pelo OWASP a todas as respostas."""
-    # Previne MIME sniffing
     response.headers["X-Content-Type-Options"] = "nosniff"
-    # Previne clickjacking
     response.headers["X-Frame-Options"] = "DENY"
-    # Proteção XSS legada (browsers antigos)
     response.headers["X-XSS-Protection"] = "0"
-    # HSTS — força HTTPS por 1 ano + subdomains + preload list
     response.headers["Strict-Transport-Security"] = (
         "max-age=63072000; includeSubDomains; preload"
     )
-    # CSP restritiva
     response.headers["Content-Security-Policy"] = (
         "default-src 'none'; frame-ancestors 'none'; form-action 'self'"
     )
-    # Referrer Policy
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    # Permissions Policy — bloqueia APIs sensíveis
     response.headers["Permissions-Policy"] = (
         "camera=(), microphone=(), geolocation=(), payment=(), usb=(), "
         "accelerometer=(), gyroscope=(), magnetometer=()"
     )
-    # Cache control — nenhuma resposta é cacheada por padrão
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
-    # Cross-Origin isolation
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
     response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
-    # Remove headers que expõem informações do servidor
     response.headers.pop("Server", None)
     response.headers.pop("X-Powered-By", None)
     return response
 
 
-# ─────────────────────────────────────────────────
-# Rate Limiting (in-memory — para produção com múltiplos
-# workers, usar Redis via flask-limiter)
-# ─────────────────────────────────────────────────
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
 RATE_LIMIT_MAX_REQUESTS = int(os.environ.get("RATE_LIMIT_MAX", "30"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW", "60"))
@@ -129,12 +103,10 @@ def rate_limit(f):
     """Rate limiting por IP de origem."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Respeita X-Forwarded-For quando atrás de proxy/LB confiável
         client_ip = request.headers.get(
             "X-Real-IP",
             request.headers.get("X-Forwarded-For", request.remote_addr or "unknown"),
         )
-        # Se X-Forwarded-For tiver múltiplos IPs, pega o primeiro (cliente real)
         if "," in client_ip:
             client_ip = client_ip.split(",")[0].strip()
 
@@ -146,7 +118,7 @@ def rate_limit(f):
         ]
 
         if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_MAX_REQUESTS:
-            logger.warning("rate_limit_exceeded client_ip=%s", client_ip)
+            logger.warning("rate_limit_exceeded client_ip=%s", _sanitize_for_log(client_ip))
             return jsonify({"error": "Too many requests"}), 429
 
         _rate_limit_store[client_ip].append(now)
@@ -155,9 +127,6 @@ def rate_limit(f):
     return decorated
 
 
-# ─────────────────────────────────────────────────
-# Gerenciamento seguro de conexão DB
-# ─────────────────────────────────────────────────
 def get_db_connection():
     """Retorna conexão SQLite com configurações seguras."""
     conn = sqlite3.connect(
@@ -171,34 +140,27 @@ def get_db_connection():
     return conn
 
 
-# ─────────────────────────────────────────────────
-# Validação de entrada
-# ─────────────────────────────────────────────────
 def validate_positive_integer(value: str | None, param_name: str = "id") -> int | None:
     """Valida que o parâmetro é um inteiro positivo (>= 0)."""
     if value is None:
         return None
     try:
         parsed = int(value)
-        if parsed < 0 or parsed > 2_147_483_647:  # Max INT32
+        if parsed < 0 or parsed > 2_147_483_647:
             return None
         return parsed
     except (ValueError, TypeError):
-        logger.info("invalid_param param=%s value=%s", param_name, value[:50] if value else "")
+        logger.info("invalid_param param=%s", param_name)
         return None
 
 
-# ─────────────────────────────────────────────────
-# Rotas
-# ─────────────────────────────────────────────────
-
-@app.route("/health")
+@app.route("/health", methods=["GET"])
 def health_check():
     """Health check para load balancers, Kubernetes probes, etc."""
     return jsonify({"status": "healthy"}), 200
 
 
-@app.route("/ready")
+@app.route("/ready", methods=["GET"])
 def readiness_check():
     """Readiness probe — verifica que o DB está acessível."""
     try:
@@ -210,14 +172,13 @@ def readiness_check():
         return jsonify({"status": "not ready"}), 503
 
 
-# ✅ SQL com parâmetros (sem SQL Injection) + validação rigorosa
-@app.route("/user")
+@app.route("/user", methods=["GET"])
 @rate_limit
 def get_user():
     """Busca usuário por ID com query parametrizada."""
     user_id = validate_positive_integer(request.args.get("id"), "id")
     if user_id is None:
-        return jsonify({"error": "Parâmetro 'id' inválido ou ausente"}), 400
+        return jsonify({"error": MSG_INVALID_ID}), 400
 
     try:
         conn = get_db_connection()
@@ -230,15 +191,14 @@ def get_user():
             conn.close()
     except sqlite3.Error:
         logger.exception("db_error endpoint=/user")
-        return jsonify({"error": "Erro interno do servidor"}), 500
+        return jsonify({"error": MSG_INTERNAL_ERROR}), 500
 
 
-# ✅ Sem shell=True + validação rigorosa + anti-SSRF
 VALID_HOST_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9.\-]{0,252}$")
 BLOCKED_HOSTS = frozenset({
     "127.0.0.1", "0.0.0.0", "::1", "localhost",
-    "metadata.google.internal",           # GCP metadata
-    "169.254.169.254",                    # AWS/Azure metadata
+    "metadata.google.internal",
+    "169.254.169.254",
     "metadata.google.internal.",
     "10.0.0.1",
 })
@@ -248,7 +208,7 @@ BLOCKED_PREFIXES = ("10.", "172.16.", "172.17.", "172.18.", "172.19.",
                     "172.30.", "172.31.", "192.168.", "fd", "fe80:")
 
 
-@app.route("/ping")
+@app.route("/ping", methods=["GET"])
 @rate_limit
 def ping():
     """Ping com proteção contra command injection e SSRF."""
@@ -262,7 +222,7 @@ def ping():
 
     host_lower = host.lower()
     if host_lower in BLOCKED_HOSTS or any(host_lower.startswith(p) for p in BLOCKED_PREFIXES):
-        logger.warning("ssrf_attempt host=%s client=%s", host, request.remote_addr)
+        logger.warning("ssrf_attempt blocked_host client=%s", _sanitize_for_log(request.remote_addr or "unknown"))
         return jsonify({"error": "Host não permitido"}), 403
 
     try:
@@ -278,14 +238,13 @@ def ping():
         return jsonify({"error": "Host unreachable"}), 502
 
 
-# ✅ Rota segura duplicada
-@app.route("/user/safe")
+@app.route("/user/safe", methods=["GET"])
 @rate_limit
 def get_user_safe():
     """Busca segura de usuário por ID."""
     user_id = validate_positive_integer(request.args.get("id"), "id")
     if user_id is None:
-        return jsonify({"error": "Parâmetro 'id' inválido ou ausente"}), 400
+        return jsonify({"error": MSG_INVALID_ID}), 400
 
     try:
         conn = get_db_connection()
@@ -298,17 +257,16 @@ def get_user_safe():
             conn.close()
     except sqlite3.Error:
         logger.exception("db_error endpoint=/user/safe")
-        return jsonify({"error": "Erro interno do servidor"}), 500
+        return jsonify({"error": MSG_INTERNAL_ERROR}), 500
 
 
-# ✅ Sem Path Traversal — whitelist fixa
 ALLOWED_FILES: dict[str, str] = {
     "report": "/var/data/report.txt",
     "status": "/var/data/status.txt",
 }
 
 
-@app.route("/file")
+@app.route("/file", methods=["GET"])
 @rate_limit
 def read_file():
     """Lê arquivo de whitelist fixa — sem path traversal."""
@@ -319,7 +277,7 @@ def read_file():
 
     filepath = ALLOWED_FILES.get(filename)
     if filepath is None:
-        logger.warning("path_traversal_attempt name=%s client=%s", filename[:50], request.remote_addr)
+        logger.warning("path_traversal_attempt client=%s", _sanitize_for_log(request.remote_addr or "unknown"))
         return jsonify({"error": "Arquivo não permitido"}), 403
 
     try:
@@ -329,12 +287,9 @@ def read_file():
         return jsonify({"error": "Arquivo não encontrado"}), 404
     except OSError:
         logger.exception("file_read_error path=%s", filepath)
-        return jsonify({"error": "Erro interno do servidor"}), 500
+        return jsonify({"error": MSG_INTERNAL_ERROR}), 500
 
 
-# ─────────────────────────────────────────────────
-# Error Handlers — NUNCA expor stack traces em prod
-# ─────────────────────────────────────────────────
 @app.errorhandler(400)
 def bad_request(_e):
     return jsonify({"error": "Bad request"}), 400
@@ -362,15 +317,12 @@ def too_many_requests(_e):
 
 @app.errorhandler(500)
 def internal_error(_e):
-    return jsonify({"error": "Erro interno do servidor"}), 500
+    return jsonify({"error": MSG_INTERNAL_ERROR}), 500
 
 
-# ─────────────────────────────────────────────────
-# Entrypoint — NUNCA usar em produção (usar Gunicorn)
-# ─────────────────────────────────────────────────
 if __name__ == "__main__":
     logger.warning(
-        "⚠️  Usando servidor de desenvolvimento Flask. "
+        "Usando servidor de desenvolvimento Flask. "
         "Em PRODUÇÃO use: gunicorn -c gunicorn.conf.py app:app"
     )
     app.run(
