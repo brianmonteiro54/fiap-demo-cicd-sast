@@ -1,3 +1,8 @@
+"""
+Testes de segurança e funcionais — Produção.
+Cobertura: OWASP Top 10, headers, injection, SSRF, rate limiting.
+"""
+
 import os
 import pytest
 
@@ -5,7 +10,15 @@ import pytest
 os.environ["FLASK_ENV"] = "testing"
 os.environ["SECRET_KEY"] = "test-secret-key-for-ci-only"
 
-from app import app  # noqa: E402
+from app import app, _rate_limit_store  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Limpa o rate limiter entre cada teste para evitar falsos 429."""
+    _rate_limit_store.clear()
+    yield
+    _rate_limit_store.clear()
 
 
 @pytest.fixture

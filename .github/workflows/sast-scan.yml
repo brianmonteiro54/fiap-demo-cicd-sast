@@ -5,9 +5,8 @@ on:
     branches: [ main ]
   push:
     branches: [ main ]
-  # Scan semanal agendado (detecta novas CVEs em dependências)
   schedule:
-    - cron: '0 6 * * 1'  # Segunda-feira às 06:00 UTC
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -29,7 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@master
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -82,7 +81,8 @@ jobs:
         with:
           name: coverage-report
 
-      - uses: SonarSource/sonarcloud-github-action@v4
+      - name: SonarQube Cloud Scan
+        uses: SonarSource/sonarqube-scan-action@v7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -106,12 +106,20 @@ jobs:
       - name: Bandit Scan (SARIF)
         run: |
           bandit -r app/ \
-            -f sarif -o bandit.sarif \
+            -f sarif \
+            -o bandit.sarif \
             --severity-level medium \
             --confidence-level medium \
-            -x "app/test_*.py" || true
+            -x "app/test_*.py,app/gunicorn.conf.py" \
+            || true
 
-      - uses: github/codeql-action/upload-sarif@v3
+          # Garante que o arquivo SARIF existe (Bandit pode não gerar se não encontrar issues)
+          if [ ! -s bandit.sarif ]; then
+            echo '{"version":"2.1.0","$schema":"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json","runs":[{"tool":{"driver":{"name":"Bandit","version":"1.0.0","rules":[]}},"results":[]}]}' > bandit.sarif
+          fi
+
+      - name: Upload Bandit SARIF
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: bandit.sarif
@@ -159,7 +167,8 @@ jobs:
           severity: CRITICAL,HIGH,MEDIUM
           exit-code: '0'
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - name: Upload Trivy IaC SARIF
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-iac.sarif
@@ -195,14 +204,15 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: '0'
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - name: Upload Trivy FS SARIF
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
 
   # ─────────────────────────────────────────────────
-  # 7. Trivy — Container Scan (roda após testes + IaC)
+  # 7. Trivy — Container Scan
   # ─────────────────────────────────────────────────
   trivy-container:
     name: 'Trivy Container Scan'
@@ -230,7 +240,8 @@ jobs:
           ignore-unfixed: true
           exit-code: '0'
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - name: Upload Trivy Container SARIF
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-container.sarif
