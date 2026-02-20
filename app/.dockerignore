@@ -1,0 +1,62 @@
+# Git
+.git
+.gitignore
+
+# CI/CD
+.github
+.scannerwork
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist
+build
+venv
+.venv
+.pytest_cache
+.coverage
+coverage.xml
+htmlcov
+
+# Testes (não vai para imagem de produção)
+test_*.py
+tests/
+conftest.py
+
+# Docs
+*.md
+LICENSE
+HANDS-ON-sast.md
+SECURITY_IMPROVEMENTS.md
+README.md
+
+# IDE
+.vscode
+.idea
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Segurança — nunca incluir
+*.pem
+*.key
+*.crt
+*.env
+*.env.*
+secrets.*
+
+# Sonar
+sonar-project.properties
+
+# Logs e resultados de scan
+*.log
+*.sarif
+bandit-results.*
+pip-audit-results.*
+
+# Nginx (fica em container separado)
+nginx/

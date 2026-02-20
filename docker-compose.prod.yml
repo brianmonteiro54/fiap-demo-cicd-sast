@@ -1,0 +1,118 @@
+# ═══════════════════════════════════════════════════
+# Docker Compose — Produção
+#
+# Uso:
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# ⚠️  Certifique-se de criar o arquivo .env com:
+#     SECRET_KEY=<chave-criptograficamente-segura>
+#     DB_PASSWORD=<senha-do-banco>
+# ═══════════════════════════════════════════════════
+
+services:
+
+  # ─────────────────────────────────────────────────
+  # App (Gunicorn)
+  # ─────────────────────────────────────────────────
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: demo-app
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=10M,noexec,nosuid
+    environment:
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - DB_PASSWORD=${DB_PASSWORD:-}
+      - DATABASE_PATH=/var/data/users.db
+      - PORT=5000
+      - GUNICORN_WORKERS=4
+      - GUNICORN_THREADS=4
+      - LOG_LEVEL=INFO
+      - FORWARDED_ALLOW_IPS=172.16.0.0/12
+    volumes:
+      - app-data:/var/data
+    networks:
+      - internal
+    expose:
+      - "5000"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW          # Necessário para o comando ping
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}"
+
+  # ─────────────────────────────────────────────────
+  # Nginx (Reverse Proxy + TLS Termination)
+  # ─────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: demo-nginx
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=10M
+      - /var/cache/nginx:size=50M
+      - /run:size=1M
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    networks:
+      - internal
+    depends_on:
+      app:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETGID
+      - SETUID
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  app-data:
+    driver: local
+
+networks:
+  internal:
+    driver: bridge
+    internal: false
