@@ -1,6 +1,3 @@
-# ═══════════════════════════════════════════════════
-# Stage 1: Builder — instala dependências isoladamente
-# ═══════════════════════════════════════════════════
 FROM python:3.13-slim AS builder
 
 RUN apt-get update && \
@@ -9,25 +6,20 @@ RUN apt-get update && \
 
 WORKDIR /build
 
-COPY requirements.txt .
+COPY --chmod=444 requirements.txt .
 
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 
-# ═══════════════════════════════════════════════════
-# Stage 2: Runtime — imagem final mínima e segura
-# ═══════════════════════════════════════════════════
 FROM python:3.13-slim
 
-# ── Labels OCI ─────────────────────────────────────
 LABEL org.opencontainers.image.title="demo-app" \
       org.opencontainers.image.description="FIAP Demo CICD SAST — Production" \
       org.opencontainers.image.vendor="FIAP" \
       org.opencontainers.image.version="2.0.0" \
       org.opencontainers.image.source="https://github.com/brianmonteiro54/fiap-demo-cicd-sast"
 
-# ── Variáveis de ambiente (seguras, sem valores sensíveis) ──
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONHASHSEED=random \
@@ -40,40 +32,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# ── Copia dependências do builder ──────────────────
-COPY --from=builder /install /usr/local
+COPY --from=builder --chmod=555 /install /usr/local
 
-# ── Cria usuário não-root (princípio do menor privilégio) ──
 RUN groupadd --gid 1001 appgroup && \
     useradd --uid 1001 --gid appgroup --shell /usr/sbin/nologin --no-create-home appuser && \
     mkdir -p /var/data && \
     chown appuser:appgroup /var/data && \
-    # Remove pacotes desnecessários
     apt-get purge -y --auto-remove && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache && \
-    # Remove pip e setuptools do runtime (não são necessários)
     pip uninstall -y pip setuptools 2>/dev/null || true
 
-# ── Copia código com ownership correto ─────────────
-COPY --chown=appuser:appgroup . .
+COPY --chown=appuser:appgroup --chmod=440 app.py .
+COPY --chown=appuser:appgroup --chmod=440 gunicorn.conf.py .
+COPY --chown=appuser:appgroup --chmod=440 requirements.txt .
 
-# ── Permissões restritivas ────────────────────────
-RUN chmod -R 550 /app && \
-    chmod 440 /app/gunicorn.conf.py && \
-    # Remove __pycache__ e .pyc se existirem
-    find /app -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
-    find /app -name "*.pyc" -delete 2>/dev/null || true
-
-# ── Executa como não-root ─────────────────────────
 USER 1001:1001
 
-# ── Expõe porta ───────────────────────────────────
 EXPOSE 5000
 
-# ── Health check ──────────────────────────────────
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')"]
 
-# ── Entrypoint: Gunicorn (produção) ──────────────
 ENTRYPOINT ["gunicorn"]
 CMD ["-c", "gunicorn.conf.py", "app:app"]
