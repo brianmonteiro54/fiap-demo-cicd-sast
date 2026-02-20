@@ -6,7 +6,7 @@ RUN apt-get update && \
 
 WORKDIR /build
 
-COPY --chmod=444 requirements.txt .
+COPY requirements.txt .
 
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir --prefix=/install -r requirements.txt
@@ -32,7 +32,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY --from=builder --chmod=555 /install /usr/local
+COPY --from=builder /install /usr/local
 
 RUN groupadd --gid 1001 appgroup && \
     useradd --uid 1001 --gid appgroup --shell /usr/sbin/nologin --no-create-home appuser && \
@@ -42,9 +42,10 @@ RUN groupadd --gid 1001 appgroup && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache && \
     pip uninstall -y pip setuptools 2>/dev/null || true
 
-COPY --chown=appuser:appgroup --chmod=440 app.py .
-COPY --chown=appuser:appgroup --chmod=440 gunicorn.conf.py .
-COPY --chown=appuser:appgroup --chmod=440 requirements.txt .
+COPY app.py gunicorn.conf.py requirements.txt ./
+
+RUN chown root:appgroup /app/app.py /app/gunicorn.conf.py /app/requirements.txt && \
+    chmod 440 /app/app.py /app/gunicorn.conf.py /app/requirements.txt
 
 USER 1001:1001
 
