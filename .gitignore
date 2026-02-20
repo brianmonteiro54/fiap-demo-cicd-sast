@@ -1,8 +1,71 @@
+# ─── Python ───
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+
+# ─── Testes / Cobertura ───
 .pytest_cache/
 coverage.xml
 .coverage
+.coverage.*
+htmlcov/
+test-results.xml
+
+# ─── Virtual Environment ───
+venv/
+.venv/
+env/
+
+# ─── IDEs ───
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── SonarQube ───
 .scannerwork/
+
+# ─── ⚠️ SEGURANÇA — NUNCA commitar ───
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets.yaml
+secrets.yml
+*.secret
+
+# ─── Certificados TLS (apenas .example) ───
+nginx/certs/*.pem
+nginx/certs/*.key
+!nginx/certs/.gitkeep
+
+# ─── OS ───
+.DS_Store
+Thumbs.db
+
+# ─── Docker ───
+docker-compose.override.yml
+
+# ─── Logs ───
 *.log
+logs/
+
+# ─── Resultados de Scan ───
+bandit-results.*
+bandit.sarif
+pip-audit-results.*
+trivy-*.sarif
+
+# ─── Database ───
+*.db
+*.sqlite3
