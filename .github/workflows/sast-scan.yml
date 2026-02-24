@@ -43,13 +43,12 @@ jobs:
 
       - name: Run Tests
         run: |
-          cd app
-          pytest test_app.py \
-            --cov=. \
-            --cov-report=xml:../coverage.xml \
+          pytest app/test_app.py \
+            --cov=app \
+            --cov-report=xml:coverage.xml \
             --cov-report=term-missing \
-            --cov-fail-under=70 \
-            --junitxml=../test-results.xml \
+            --cov-fail-under=80 \
+            --junitxml=test-results.xml \
             -v --tb=short --strict-markers
         env:
           FLASK_ENV: testing

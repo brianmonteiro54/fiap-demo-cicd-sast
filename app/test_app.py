@@ -5,6 +5,7 @@ Cobertura: OWASP Top 10, headers, injection, SSRF, rate limiting.
 
 import os
 import pytest
+from unittest.mock import patch, mock_open, MagicMock
 
 # Forçar variáveis antes do import da app
 os.environ["FLASK_ENV"] = "testing"
@@ -40,6 +41,13 @@ class TestProbes:
     def test_readiness_check(self, client):
         r = client.get("/ready")
         assert r.status_code in [200, 503]
+
+    def test_readiness_db_failure(self, client):
+        """Cobre linhas 172-173: exceção no DB retorna 503."""
+        with patch("app.get_db_connection", side_effect=Exception("DB down")):
+            r = client.get("/ready")
+            assert r.status_code == 503
+            assert r.get_json()["status"] == "not ready"
 
     def test_app_exists(self):
         assert app is not None
@@ -122,6 +130,29 @@ class TestSQLInjection:
 
 
 # ═══════════════════════════════════════════════════
+# SQL — DB success path (mock)
+# ═══════════════════════════════════════════════════
+class TestSQLSuccess:
+    """Cobre linhas 190 e 268: retorno com sucesso do DB."""
+
+    def _mock_conn(self):
+        mock_conn = MagicMock()
+        mock_row = {"id": 1, "name": "Alice"}
+        mock_conn.execute.return_value.fetchall.return_value = [mock_row]
+        return mock_conn
+
+    def test_get_user_success(self, client):
+        with patch("app.get_db_connection", return_value=self._mock_conn()):
+            r = client.get("/user?id=1")
+            assert r.status_code == 200
+
+    def test_get_user_safe_success(self, client):
+        with patch("app.get_db_connection", return_value=self._mock_conn()):
+            r = client.get("/user/safe?id=1")
+            assert r.status_code == 200
+
+
+# ═══════════════════════════════════════════════════
 # Command Injection (A03:2021)
 # ═══════════════════════════════════════════════════
 class TestCommandInjection:
@@ -152,6 +183,34 @@ class TestCommandInjection:
 
 
 # ═══════════════════════════════════════════════════
+# Ping — subprocess edge cases
+# ═══════════════════════════════════════════════════
+class TestPingEdgeCases:
+    """Cobre linhas 247-251: sucesso, TimeoutExpired e CalledProcessError."""
+
+    def test_ping_success(self, client):
+        """Cobre linha 247: retorno com sucesso do ping."""
+        with patch("app.subprocess.check_output", return_value=b"PING ok"):
+            r = client.get("/ping?host=example.com")
+            assert r.status_code == 200
+            assert "PING ok" in r.get_json()["result"]
+
+    def test_ping_timeout(self, client):
+        """Cobre linhas 248-249: TimeoutExpired."""
+        import subprocess
+        with patch("app.subprocess.check_output", side_effect=subprocess.TimeoutExpired(cmd="ping", timeout=5)):
+            r = client.get("/ping?host=example.com")
+            assert r.status_code == 504
+
+    def test_ping_unreachable(self, client):
+        """Cobre linhas 250-251: CalledProcessError."""
+        import subprocess
+        with patch("app.subprocess.check_output", side_effect=subprocess.CalledProcessError(1, "ping")):
+            r = client.get("/ping?host=example.com")
+            assert r.status_code == 502
+
+
+# ═══════════════════════════════════════════════════
 # SSRF (A10:2021)
 # ═══════════════════════════════════════════════════
 class TestSSRF:
@@ -175,6 +234,11 @@ class TestSSRF:
 
     def test_private_192_blocked(self, client):
         assert client.get("/ping?host=192.168.1.1").status_code == 403
+
+    def test_non_ip_host_not_blocked(self, client):
+        """Cobre linhas 220-221: hostname válido gera ValueError em ip_address()."""
+        r = client.get("/ping?host=example.com")
+        assert r.status_code in [200, 502, 504]
 
 
 # ═══════════════════════════════════════════════════
@@ -207,6 +271,50 @@ class TestPathTraversal:
 
 
 # ═══════════════════════════════════════════════════
+# File read — success + OSError paths
+# ═══════════════════════════════════════════════════
+class TestFileReadEdgeCases:
+    """Cobre linhas 298, 301-303."""
+
+    def test_file_read_success(self, client):
+        """Cobre linha 298: leitura de arquivo com sucesso."""
+        m = mock_open(read_data="conteúdo do relatório")
+        with patch("builtins.open", m):
+            r = client.get("/file?name=report")
+            assert r.status_code == 200
+            assert r.get_json()["content"] == "conteúdo do relatório"
+
+    def test_file_read_os_error(self, client):
+        """Cobre linhas 301-303: OSError na leitura."""
+        with patch("builtins.open", side_effect=OSError("Permission denied")):
+            r = client.get("/file?name=report")
+            assert r.status_code == 500
+
+
+# ═══════════════════════════════════════════════════
+# Rate Limiting
+# ═══════════════════════════════════════════════════
+class TestRateLimiting:
+    """Cobre linhas 112, 122-123."""
+
+    def test_rate_limit_exceeded(self, client):
+        """Cobre linhas 122-123: retorna 429 após exceder limite."""
+        for _ in range(31):
+            client.get("/user?id=1")
+        r = client.get("/user?id=1")
+        assert r.status_code == 429
+        assert "Too many" in r.get_json()["error"]
+
+    def test_forwarded_for_with_comma(self, client):
+        """Cobre linha 112: X-Forwarded-For com múltiplos IPs."""
+        r = client.get(
+            "/user?id=1",
+            headers={"X-Forwarded-For": "203.0.113.1, 198.51.100.1"},
+        )
+        assert r.status_code in [200, 400, 500]
+
+
+# ═══════════════════════════════════════════════════
 # Error Handling — não vazar informações
 # ═══════════════════════════════════════════════════
 class TestErrorHandling:
@@ -228,6 +336,22 @@ class TestErrorHandling:
         body = r.get_data(as_text=True)
         assert "sqlite" not in body.lower() or r.status_code == 200
         assert "traceback" not in body.lower()
+
+    def test_413_payload_too_large(self, client):
+        """Cobre linha 323: error handler 413."""
+        r = client.post(
+            "/health",
+            data=b"x" * (2 * 1024 * 1024),
+            content_type="application/octet-stream",
+        )
+        assert r.status_code in [405, 413]
+
+    def test_500_error_handler(self, client):
+        """Cobre linha 333: error handler 500 via sqlite3.Error."""
+        import sqlite3
+        with patch("app.get_db_connection", side_effect=sqlite3.Error("db fail")):
+            r = client.get("/user?id=1")
+            assert r.status_code == 500
 
 
 # ═══════════════════════════════════════════════════
